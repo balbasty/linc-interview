@@ -1,0 +1,10 @@
+name: pytorch2
+channels:
+  - conda-forge
+dependencies:
+  - python
+  - pytorch
+  - ipython
+  - matplotlib
+  - ipykernel
+  - notebook
