@@ -176,7 +176,7 @@ class VoxelMorph(nn.Module):
         """
         moved = self.deform(mov, disp)
         loss = nn.MSELoss()(moved, fix)
-        loss += self.membrane * lam
+        loss += self.membrane(disp) * lam
         return loss
 
 
