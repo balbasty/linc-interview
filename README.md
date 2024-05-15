@@ -42,4 +42,7 @@ python main.py --run train --nb_features 32,64,128,256 --lr 0.005 --lam 0 --chec
 ```
 python main.py --run eval --nb_features 32,64,128,256 --lr 0.005 --lam 0 --checkpoint_path last.ckpt
 ```
+## Output example
+
+<img src=https://github.com/liviamarodrigues/linc-interview/blob/main/exercise_img.png>
 
