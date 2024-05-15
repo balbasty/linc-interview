@@ -1,82 +1,84 @@
-from loaders import get_train_eval_test
-from typing import Literal
-from torch import nn
-from torch.nn import functional as F
+import os
 import torch
-
+import pytorch_lightning as pl
+from torch import nn
+from blocks import Encoder, Decoder
+from torch.nn import functional as F
+from lightning_model_ import TrainerModule
+from pytorch_lightning.callbacks import ModelCheckpoint
 
 class Backbone(nn.Module):
-    """A 2D UNet
+    """
+        2D U-Net flexibly parameterized
 
-    ```
-    C -[conv xN]-> F ----------------------(cat)----------------------> 2*F -[conv xN]-> Cout
-                   |                                                     ^
-                   v                                                     |
-                  F*m -[conv xN]-> F*m  ---(cat)---> 2*F*m -[conv xN]-> F*m
-                                    |                  ^
-                                    v                  |
-                                  F*m*m -[conv xN]-> F*m*m
-    ```
-    """  # noqa: E501
-
+        Args:
+            inp_channels (int): number of input channels
+            out_channels (int): number of output channels
+            nb_features (list) = number of features per layer
+            nb_conv_per_level (int) = number of total convolutional blocks per layer 
+            pooling (bool): True if use MaxPool2D
+            scale_factor (int): upsampling scale factor
+            act_function:(str): activate function (ReLU, ELU or LeakyReLU)
+            last_act_function = activate function used on last layer ("softmax", "sigmoid" or "no_act_function")
+            unpooling: upsampling function ("transp_conv", "interpolation" or "no_pool")
+            mode: interpolation algorithm used if unpooling == "interpolation" 
+                    ('nearest', 'linear', 'bilinear', 'bicubic' or 'trilinear')
+            
+        Return:
+            output tensor
+    """
     def __init__(
             self,
-            inp_channels: int = 2,
-            out_channels: int = 2,
-            nb_features: int = 16,
-            mul_features: int = 2,
-            nb_levels: int = 3,
-            nb_conv_per_level: int = 2,
-            # Implementing the following switches is optional.
-            # If not implementing the switch, choose the mode you prefer.
-            activation: Literal['ReLU', 'ELU'] = 'ReLU',
-            pool: Literal['interpolate', 'conv'] = 'interpolate',
+            inp_channels = 2,
+            out_channels = 2,
+            nb_features = [32,64,128],
+            nb_conv_per_level= 2,
+            scale_factor = 2,
+            activation = 'ReLU',
+            last_act_function = 'sigmoid',
+            unpooling = "transp_conv", 
+            mode = "nearest"
     ):
-        """
-        Parameters
-        ----------
-        inp_channels : int
-            Number of input channels
-        out_channels : int
-            Number of output chanels
-        nb_features : int
-            Number of features at the finest level
-        mul_features : int
-            Multiply the number of features by this number
-            each time we go down one level.
-        nb_conv_per_level : int
-            Number of convolutional layers at each level.
-        pool : {'interpolate', 'conv'}
-            Method used to go down/up one level.
-            If `interpolate`, use `torch.nn.functional.interpolate`.
-            If `conv`, use strided convolutions on the way down, and
-            transposed convolutions on the way up.
-        activation : {'ReLU', 'ELU'}
-            Type of activation
-        """
-        raise NotImplementedError
 
+        super().__init__()
+        if activation == 'ReLU':
+            act_function = nn.ReLU()
+        elif activation == 'LeakyReLU':
+            act_function = nn.LeakyReLU()
+        elif activation == 'ELU':
+            act_function = nn.ELU()
+        else:
+            raise ValueError('activation function must be ReLU, ELU or LeakyReLU')
+        
+        last_act_function_list = ["softmax", "sigmoid", "ReLU", "no_act_function"]
+        unpooling_list = ["transp_conv", "interpolation"]
+        mode_list = ['nearest', 'linear', 'bilinear', 'bicubic', 'trilinear']
+        assert isinstance(inp_channels, int), 'inp_channels should be a interger'
+        assert isinstance(out_channels, int), 'out_channels should be a interger'
+        assert isinstance(nb_features, list), 'inp_channels should be a list'
+        assert isinstance(nb_conv_per_level, int), 'nb_conv_per_level be a interger'
+        assert isinstance(scale_factor, int), 'scale_factor should be a interger'
+        assert isinstance(scale_factor, int), 'scale_factor should be a interger'
+        assert last_act_function in last_act_function_list, 'last_act_function should be "softmax", "sigmoid","ReLU" or "no_act_function"'
+        assert unpooling in unpooling_list, 'unpooling should be "transp_conv", "interpolation"'
+        assert mode in mode_list, 'mode should be "nearest", "linear", "bilinear", "bicubic" or "trilinear"'
+        
+        self.encoders = Encoder(inp_channels, nb_features, nb_conv_per_level, scale_factor, act_function)
+        self.decoders = Decoder(out_channels, nb_features, nb_conv_per_level, scale_factor, unpooling, mode, act_function,last_act_function)
+    
+        
     def forward(self, inp):
-        """
-        Parameters
-        ----------
-        inp : (B, in_channels, X, Y)
-            Input tensor
 
-        Returns
-        -------
-        out : (B, out_channels, X, Y)
-            Output tensor
-        """
-        raise NotImplementedError
-
+        (encoders_feat, inp_decoder) = self.encoders(inp)    
+        out = self.decoders(encoders_feat, inp_decoder)
+        return out
 
 class VoxelMorph(nn.Module):
     """
     Construct a voxelmorph network with the given backbone
     """
-
     def __init__(self, **backbone_parameters):
+
         """
         Parameters
         ----------
@@ -84,8 +86,8 @@ class VoxelMorph(nn.Module):
             Parameters of the `Backbone` class
         """
         super().__init__()
-        self.backbone = Backbone(2, 2, **backbone_parameters)
-
+        self.backbone = Backbone(**backbone_parameters)
+                
     def forward(self, fixmov):
         """
         Predict a displacement field from a fixed and moving images
@@ -141,6 +143,7 @@ class VoxelMorph(nn.Module):
         # Permute/flip to conform to torch conventions
         disp = disp.permute([0, 2, 3, 1])
         disp = disp.flip([-1])
+        mov = mov[:,None,:,:]
 
         # Transform moving image
         return F.grid_sample(
@@ -179,19 +182,96 @@ class VoxelMorph(nn.Module):
         loss += self.membrane(disp) * lam
         return loss
 
+def set_trainer(checkpoint_path, accelerator, devices, max_epochs = 300, accumulate_grad_batches = 1,min_delta = 0.001, patience = 50):
+    """
+    Lightning model function
+    
+    Args:
 
-trainset, evalset, testset = get_train_eval_test()
+    max_epochs (int): max epochs used for training
+    accumulate_grad_batches (int): accumulate gradients before running optimizer
+    checkpoint_path (str): path to save the checkpoint
+    patience (int): number of epochs the training will run before stop if there
+                    is no improvement on the monitored metric
 
+    Return:
+    Lightning model used for training and testing
+    """
 
-def train(*args, **kwargs):
+    #Define checkpoint path
+    checkpoint_dir = os.path.dirname(os.path.abspath(checkpoint_path))
+    #callback to save checkpoint
+    checkpoint_callback = ModelCheckpoint(dirpath=checkpoint_dir,
+                                        monitor="val_loss",
+                                        mode="min",
+                                        save_last = True,
+                                        save_top_k=5)
+    #Stop criteria (early stop)                                        
+    early_stop_callback = pl.callbacks.EarlyStopping(monitor="val_loss", 
+                                min_delta=min_delta, 
+                                patience=patience, 
+                                verbose=True, mode="min")
+
+    trainer = pl.Trainer(
+                        max_epochs=max_epochs,
+                        accumulate_grad_batches=accumulate_grad_batches,accelerator = accelerator,
+                        devices = devices,
+                        callbacks=[checkpoint_callback, early_stop_callback],
+                        )
+
+    return trainer
+
+def train(model, trainset, evalset, testset, lr,lam,accelerator, devices, checkpoint_path,  max_epochs=300, accumulate_grad_batches = 1,min_delta = 0.001,patience = 50):
     """
     A training function
-    """
-    raise NotImplementedError('Implement this function yourself')
 
+    Args:
+    trainer: model trainer
+    trainer_module: lightning model 
+    """
+    #define lightning model
+    trainer_module = TrainerModule(model = model,
+                    trainset=trainset,
+                    evalset=evalset, 
+                    testset=testset,
+                    lr = lr,
+                    lam = lam)
+    #define trainer
+    trainer = set_trainer(checkpoint_path, accelerator, devices,max_epochs, 
+                accumulate_grad_batches,min_delta, patience)
+    #fit trainer
+    trainer.fit(trainer_module)
 
-def test(*args, **kwargs):
+def test(model, testset, checkpoint_path,lr, lam, accelerator, devices, max_epochs=300, accumulate_grad_batches = 1,min_delta = 0.001, patience = 50):
     """
-    A testing function
+    A training function
+
+    Args:
+    trainer: model trainer
+    trainer_module: lightning model 
+
+    Return
+    metric: test metric
+    deform: deformed image
     """
-    raise NotImplementedError('Implement this function yourself')
+    ckpt = torch.load(checkpoint_path)['state_dict']
+    #adjust checkpoint_path keys
+    new_state_dict = {}
+    for keys, values in ckpt.items():
+        new_state_dict[keys[6:]] = values
+    #load state_dict
+    model.load_state_dict(new_state_dict)
+    trainer = set_trainer(checkpoint_path, accelerator, devices,max_epochs, 
+                accumulate_grad_batches,min_delta, patience)
+    trainer_module = TrainerModule(model,
+                    trainset=None,
+                    evalset=None, 
+                    testset=testset,
+                    lr =None,
+                    lam = lam)
+    outs = trainer.predict(trainer_module, testset)
+    out_loss = [out[1].unsqueeze(0) for out in outs]
+    out_deformed = [out[0] for out in outs]
+    loss = float(torch.cat(out_loss,0).mean())
+    deformed = torch.cat(out_deformed, 0)
+    return  loss, deformed

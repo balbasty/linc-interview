@@ -1,45 +1,45 @@
-# Coding exercise for LINC interviews
+# Code exercising for LINC interviews
 
-## Instructions
+## files
 
-Open the file `exercise.py`. You are asked to fill the methods and
-functions that currently raise `NotImplementedError`:
-- `Backbone.__init__`
-- `Backbone.forward`
-- `train`
-- `test`
+- layers.py : layers used to form blocks
+- blocks.py : Encoder and Decoder 
+- exercise.py : Updated VoxMorph class, train and test functions
+- lightning_model_.py : TrainerModule class using pytorch lightning_model_
+- loaders.py : create train, eval, test dataloaders (already given, not changed)
+- main.py : used to run training and testing
+- example.ipynb : testing example
+- last.ckpt : trained checkpoint
 
-The first thing to do is to implement a [2D UNet](https://arxiv.org/pdf/1505.04597.pdf).
-However, this UNet must be flexibly parameterized. In particular, we ask
-that the **number of levels**, **number of features per layer** and
-**number of convolutions per layer** be switcheable by the user. Although
-this is not required, you may optionally parameterize the type of
-pooling/unpooling operation (bilinear interpolation, strided convolution,
-max pooling) and the activation function.
+## Installation
 
-The second thing to do is to implement `train` and `test` functions
-for a [voxelmorph registration network](https://arxiv.org/pdf/1809.05231.pdf),
-that uses your UNet as a backbone. The `VoxelMorph` class it already written,
-but you will need to write your own training loop, as well as a test
-function. You are free to parameterize the training loop as you wish.
-However, you are asked to use the train/eval/test dataloaders that are
-provided.
+The libraries used are:
+- pytorch
+- pytorch_lightning
+- matplotlib
+- numpy
+- jupyter notebook
 
-To submit your solution, please open a **pull request**.
 
-## Notes
+You can install libs using the environment.yml file:
 
-If you've never coded in PyTorch before, you'll want to read some of
-the PyTorch tutorials. We recommend:
+```
+conda env create -f environment.yml
+```
 
-- [Datasets & DataLoaders](https://pytorch.org/tutorials/beginner/basics/data_tutorial.html)
-- [Build the Neural Network](https://pytorch.org/tutorials/beginner/basics/buildmodel_tutorial.html)
-- [Optimizing Model Parameters](https://pytorch.org/tutorials/beginner/basics/optimization_tutorial.html)
-- [Save and Load the Model](https://pytorch.org/tutorials/beginner/basics/saveloadrun_tutorial.html)
+It is necessary to have CUDA 12.1 or higher
 
-In this case, doing this excercise will take a bit of time, but it will be
-a good learning exercise.
+## How to use
 
-If you are familiar with PyTorch and you've already built and trained
-models, it should be much faster. In this case, we recommend focusing on
-code quality and readability.
+**For training, run on the terminal:**
+
+```
+python main.py --run train --nb_features 32,64,128,256 --lr 0.005 --lam 0 --checkpoint_path last.ckpt
+```
+
+**For testing:**
+
+```
+python main.py --run eval --nb_features 32,64,128,256 --lr 0.005 --lam 0 --checkpoint_path last.ckpt
+```
+

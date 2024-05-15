@@ -90,9 +90,9 @@ def get_train_eval_test():
     """
     torch.manual_seed(1234)
     trainset = NumberPairsDataset(subset=slice(600))
-    evalset = NumberPairsDataset(subset=slice(600, 800))
-    testset = NumberPairsDataset(subset=slice(800, 1000))
+    evalset = NumberPairsDataset(subset=slice(600,800))
+    testset = NumberPairsDataset(subset=slice(800,1000))
     train = DataLoader(trainset, batch_size=8, shuffle=True)
-    eval = DataLoader(evalset, batch_size=64, shuffle=True)
-    test = DataLoader(testset, batch_size=64, shuffle=True)
+    eval = DataLoader(evalset, batch_size=64, shuffle=False)
+    test = DataLoader(testset, batch_size=64, shuffle=False)
     return train, eval, test
