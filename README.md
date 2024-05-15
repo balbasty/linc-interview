@@ -29,6 +29,15 @@ conda env create -f environment.yml
 
 It is necessary to have CUDA 12.1 or higher
 
+## Encoder/Decoder blocks explanation
+
+Each encoder block is formed by n convolutions followed by a pooling layer.
+
+Each decoder block is formed by n convolutions followed by an unpooling layer (except for the last block, that do not have unpooling)
+
+
+<img src=https://github.com/liviamarodrigues/linc-interview/blob/main/unet.png width="500" height="400">
+
 ## How to use
 
 **For training, run on the terminal:**
