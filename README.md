@@ -36,7 +36,7 @@ Each encoder block is formed by n convolutions followed by a pooling layer.
 Each decoder block is formed by n convolutions followed by an unpooling layer (except for the last block, that do not have unpooling)
 
 
-<img src=https://github.com/liviamarodrigues/linc-interview/blob/main/unet.png width="500" height="400">
+<img src=https://github.com/liviamarodrigues/linc-interview/blob/main/unet.png width="550" height="400">
 
 ## How to use
 
