@@ -43,3 +43,21 @@ a good learning exercise.
 If you are familiar with PyTorch and you've already built and trained
 models, it should be much faster. In this case, we recommend focusing on
 code quality and readability.
+
+## Requirements
+
+The user can create the virtual environment with the necessary libraries included using: 
+
+conda env create --file=conda.yaml
+
+## How to run
+The user can select model hyperparameter values such as the **number of levels**, **number of features per layer**,
+**number of convolutions per layer**, **activation function**, and **pooling operation** by passing them as arguments to the script.
+
+Also, some additional hyperparameters that can be selected are the **number of epochs**, and **learning rate**. 
+
+An example call of the script that trains and tests the model can be found below:
+
+'''
+python exercise.py --num_epochs 200 --nb_features 16 --mul_features 2 --nb_levels 3 --nb_conv_per_level 2 --activation ReLU --pool conv
+''' 
