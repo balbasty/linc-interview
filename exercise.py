@@ -85,12 +85,13 @@ class Backbone(nn.Module):
         # Bottleneck
         self.bottleneck = self._make_level(in_channels, in_channels * mul_features, nb_conv_per_level)
         in_channels = in_channels * mul_features
+        # bottleneck_output_channels = 
 
         # Decoder
         self.decoders = nn.ModuleList()
         for level in range(nb_levels - 1, -1, -1):
             level_out_channels = out_channels_list[level]
-            self.decoders.append(self._make_level(in_channels, level_out_channels, nb_conv_per_level))
+            self.decoders.append(self._make_level(in_channels//2+level_out_channels, level_out_channels, nb_conv_per_level))
             in_channels = level_out_channels
 
         # Final Convolution
@@ -145,7 +146,14 @@ class Backbone(nn.Module):
             raise ValueError(f"Unsupported pool method: {self.pool}")
 
     def _upsample(self, x):
-        return nn.ConvTranspose2d(x.size(1), x.size(1) // 2, kernel_size=2, stride=2).to(x.device)(x)
+        if self.pool == 'interpolate' or self.pool == 'max':
+            x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=True)
+            return nn.Conv2d(x.size(1), x.size(1)//2, kernel_size=3, padding=1).to(x.device)(x)
+        elif self.pool == 'conv':
+            return nn.ConvTranspose2d(x.size(1), x.size(1) // 2, kernel_size=2, stride=2).to(x.device)(x)
+        else:
+            raise ValueError(f"Unsupported pool method: {self.pool}")
+
 
 class VoxelMorph(nn.Module):
     """
@@ -356,7 +364,7 @@ def main():
     parser = argparse.ArgumentParser()
 
     # Training hyperparameteres
-    parser.add_argument('--num_epochs', default=100, type=int)
+    parser.add_argument('--num_epochs', default=150, type=int)
     parser.add_argument('--learning_rate', default=1e-3, type=float)
     parser.add_argument('--lam', default=0.1, type=float)
 
@@ -386,6 +394,8 @@ def main():
     writer = SummaryWriter()
 
     model = VoxelMorph(**backbone_parameters)
+
+    print(model)
 
     # Train the model
     train(model, trainset, evalset, writer, num_epochs=args.num_epochs, learning_rate=args.learning_rate, lam=args.lam)
