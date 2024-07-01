@@ -73,6 +73,7 @@ class Backbone(nn.Module):
         
         # Encoder
         self.encoders = nn.ModuleList()
+        self.downconvs = nn.ModuleList()
         in_channels = inp_channels
         out_channels_list = []
 
@@ -81,6 +82,10 @@ class Backbone(nn.Module):
             out_channels_list.append(level_out_channels)
             self.encoders.append(self._make_level(in_channels, level_out_channels, nb_conv_per_level))
             in_channels = level_out_channels
+            if self.pool == 'conv':
+                self.downconvs.append(nn.Conv2d(in_channels, in_channels, kernel_size=2, stride=2))
+            else:
+                self.downconvs.append(None)
 
         # Bottleneck
         self.bottleneck = self._make_level(in_channels, in_channels * mul_features, nb_conv_per_level)
@@ -89,9 +94,14 @@ class Backbone(nn.Module):
 
         # Decoder
         self.decoders = nn.ModuleList()
+        self.upconvs = nn.ModuleList()
         for level in range(nb_levels - 1, -1, -1):
             level_out_channels = out_channels_list[level]
             self.decoders.append(self._make_level(in_channels//2+level_out_channels, level_out_channels, nb_conv_per_level))
+            if self.pool == 'conv':
+                self.upconvs.append(nn.ConvTranspose2d(in_channels, in_channels // 2, kernel_size=2, stride=2))
+            else:
+                self.upconvs.append(nn.Conv2d(in_channels, in_channels//2, kernel_size=3, padding=1))
             in_channels = level_out_channels
 
         # Final Convolution
@@ -119,38 +129,38 @@ class Backbone(nn.Module):
         """
         enc_features = []
         # Encoder
-        for encoder in self.encoders:
+        for encoder, downconv in zip(self.encoders, self.downconvs):            
             x = encoder(x)
             enc_features.append(x)
-            x = self._downsample(x)
+            x = self._downsample(x, downconv)
 
         # Bottleneck
         x = self.bottleneck(x)
 
         # Decoder
-        for decoder, enc in zip(self.decoders, reversed(enc_features)):
-            x = self._upsample(x)
+        for decoder, enc, upconv in zip(self.decoders, reversed(enc_features), self.upconvs):
+            x = self._upsample(x, upconv)
             x = torch.cat([x, enc], dim=1)
             x = decoder(x)
         x = self.final_conv(x)
         return x
     
-    def _downsample(self, x):
+    def _downsample(self, x, downconv=None):
         if self.pool == 'interpolate':
             return F.interpolate(x, scale_factor=0.5, mode='bilinear', align_corners=True)
         elif self.pool == 'conv':
-            return nn.Conv2d(x.size(1), x.size(1), kernel_size=2, stride=2).to(x.device)(x)
+            return downconv(x)
         elif self.pool == 'max':
             return F.max_pool2d(x, kernel_size=2, stride=2)
         else:
             raise ValueError(f"Unsupported pool method: {self.pool}")
 
-    def _upsample(self, x):
-        if self.pool == 'interpolate' or self.pool == 'max':
+    def _upsample(self, x, upconv=None):
+        if self.pool == 'conv':
+            return upconv(x)
+        elif self.pool == 'interpolate' or self.pool == 'max':
             x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=True)
-            return nn.Conv2d(x.size(1), x.size(1)//2, kernel_size=3, padding=1).to(x.device)(x)
-        elif self.pool == 'conv':
-            return nn.ConvTranspose2d(x.size(1), x.size(1) // 2, kernel_size=2, stride=2).to(x.device)(x)
+            return upconv(x)
         else:
             raise ValueError(f"Unsupported pool method: {self.pool}")
 
