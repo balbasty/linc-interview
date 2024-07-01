@@ -3,7 +3,11 @@ from typing import Literal
 from torch import nn
 from torch.nn import functional as F
 import torch
-
+import torch.optim as optim
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+import argparse
+from torch.utils.tensorboard import SummaryWriter
 
 class Backbone(nn.Module):
     """A 2D UNet
@@ -27,10 +31,8 @@ class Backbone(nn.Module):
             mul_features: int = 2,
             nb_levels: int = 3,
             nb_conv_per_level: int = 2,
-            # Implementing the following switches is optional.
-            # If not implementing the switch, choose the mode you prefer.
             activation: Literal['ReLU', 'ELU'] = 'ReLU',
-            pool: Literal['interpolate', 'conv'] = 'interpolate',
+            pool: Literal['interpolate', 'max', 'conv'] = 'interpolate',
     ):
         """
         Parameters
@@ -51,12 +53,69 @@ class Backbone(nn.Module):
             If `interpolate`, use `torch.nn.functional.interpolate`.
             If `conv`, use strided convolutions on the way down, and
             transposed convolutions on the way up.
+            If 'max' use max pooling.
         activation : {'ReLU', 'ELU'}
             Type of activation
         """
-        raise NotImplementedError
 
-    def forward(self, inp):
+        super(Backbone, self).__init__()
+
+        self.nb_levels = nb_levels
+        self.activation = activation
+        self.pool = pool
+
+        if activation == 'ReLU':
+            self.activation_fn = nn.ReLU(inplace=True)
+        elif activation == 'ELU':
+            self.activation_fn = nn.ELU(inplace=True)
+        else:
+            raise ValueError(f"Unsupported activation: {activation}")
+        
+        # Encoder
+        self.encoders = nn.ModuleList()
+        self.downconvs = nn.ModuleList()
+        in_channels = inp_channels
+        out_channels_list = []
+
+        for level in range(nb_levels):
+            level_out_channels = nb_features * (mul_features ** level)
+            out_channels_list.append(level_out_channels)
+            self.encoders.append(self._make_level(in_channels, level_out_channels, nb_conv_per_level))
+            in_channels = level_out_channels
+            if self.pool == 'conv':
+                self.downconvs.append(nn.Conv2d(in_channels, in_channels, kernel_size=2, stride=2))
+            else:
+                self.downconvs.append(None)
+
+        # Bottleneck
+        self.bottleneck = self._make_level(in_channels, in_channels * mul_features, nb_conv_per_level)
+        in_channels = in_channels * mul_features
+        # bottleneck_output_channels = 
+
+        # Decoder
+        self.decoders = nn.ModuleList()
+        self.upconvs = nn.ModuleList()
+        for level in range(nb_levels - 1, -1, -1):
+            level_out_channels = out_channels_list[level]
+            self.decoders.append(self._make_level(in_channels//2+level_out_channels, level_out_channels, nb_conv_per_level))
+            if self.pool == 'conv':
+                self.upconvs.append(nn.ConvTranspose2d(in_channels, in_channels // 2, kernel_size=2, stride=2))
+            else:
+                self.upconvs.append(nn.Conv2d(in_channels, in_channels//2, kernel_size=3, padding=1))
+            in_channels = level_out_channels
+
+        # Final Convolution
+        self.final_conv = nn.Conv2d(in_channels, out_channels, kernel_size=1)
+
+    def _make_level(self, in_channels, out_channels, nb_conv):
+        layers = []
+        for _ in range(nb_conv):
+            layers.append(nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1))
+            layers.append(self.activation_fn)
+            in_channels = out_channels
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
         """
         Parameters
         ----------
@@ -68,7 +127,42 @@ class Backbone(nn.Module):
         out : (B, out_channels, X, Y)
             Output tensor
         """
-        raise NotImplementedError
+        enc_features = []
+        # Encoder
+        for encoder, downconv in zip(self.encoders, self.downconvs):            
+            x = encoder(x)
+            enc_features.append(x)
+            x = self._downsample(x, downconv)
+
+        # Bottleneck
+        x = self.bottleneck(x)
+
+        # Decoder
+        for decoder, enc, upconv in zip(self.decoders, reversed(enc_features), self.upconvs):
+            x = self._upsample(x, upconv)
+            x = torch.cat([x, enc], dim=1)
+            x = decoder(x)
+        x = self.final_conv(x)
+        return x
+    
+    def _downsample(self, x, downconv=None):
+        if self.pool == 'interpolate':
+            return F.interpolate(x, scale_factor=0.5, mode='bilinear', align_corners=True)
+        elif self.pool == 'conv':
+            return downconv(x)
+        elif self.pool == 'max':
+            return F.max_pool2d(x, kernel_size=2, stride=2)
+        else:
+            raise ValueError(f"Unsupported pool method: {self.pool}")
+
+    def _upsample(self, x, upconv=None):
+        if self.pool == 'conv':
+            return upconv(x)
+        elif self.pool == 'interpolate' or self.pool == 'max':
+            x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=True)
+            return upconv(x)
+        else:
+            raise ValueError(f"Unsupported pool method: {self.pool}")
 
 
 class VoxelMorph(nn.Module):
@@ -180,18 +274,146 @@ class VoxelMorph(nn.Module):
         return loss
 
 
-trainset, evalset, testset = get_train_eval_test()
+def train(model, train_loader, val_loader, writer, num_epochs=100, learning_rate=1e-3, lam=0.1, device='cuda'):
+    """
+    Train the VoxelMorph model.
+
+    Parameters:
+    model (nn.Module): The VoxelMorph model to train.
+    train_loader (DataLoader): DataLoader for the training data.
+    val_loader (DataLoader): DataLoader for the validation data.
+    writer (SummaryWriter): Tensorboard writer. 
+    num_epochs (int): Number of epochs to train.
+    learning_rate (float): Learning rate for the optimizer.
+    lam (float): Regularization parameter for the loss function.
+    device (str): Device to use for training ('cuda' or 'cpu').
+
+    Returns:
+    None
+    """
+
+    device = torch.device(device if torch.cuda.is_available() else 'cpu')
+    model.to(device)
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+
+    for epoch in range(num_epochs):
+        model.train()
+        train_loss = 0.0
+
+        for batch in tqdm(train_loader, desc=f"Training Epoch {epoch + 1}/{num_epochs}"):
+            batch = batch.to(device)
+            moving, fixed = batch[:, 1:2], batch[:, 0:1]  # Extract moving and fixed images
+            optimizer.zero_grad()
+            fixmov = torch.cat([fixed, moving], dim=1)
+            disp = model(fixmov)
+            loss = model.loss(fixed, moving, disp, lam)
+            loss.backward()
+            optimizer.step()
+            train_loss += loss.item()
+
+        train_loss /= len(train_loader)
+
+        val_loss = 0.0
+        model.eval()
+        with torch.no_grad():
+            for batch in tqdm(val_loader, desc="Validation"):
+                batch = batch.to(device)
+                moving, fixed = batch[:, 1:2], batch[:, 0:1]  # Extract moving and fixed images
+                fixmov = torch.cat([fixed, moving], dim=1)
+                disp = model(fixmov)
+                loss = model.loss(fixed, moving, disp, lam)
+                val_loss += loss.item()
+
+        val_loss /= len(val_loader)
+
+        print(f"Epoch [{epoch + 1}/{num_epochs}], Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
+
+        # Log the losses to TensorBoard
+        writer.add_scalar('Loss/train', train_loss, epoch)
+        writer.add_scalar('Loss/eval', val_loss, epoch)
+        writer.add_images('Fixed', fixed[0:1], epoch)
+        writer.add_images('Moving', moving[0:1], epoch)
+        writer.add_images('Deformed', model.deform(moving, disp)[0:1], epoch)
+        writer.add_images('Displacement_X', disp[0:1, 0:1, :, :], epoch)
+        writer.add_images('Displacement_Y', disp[0:1, 1:2, :, :], epoch)
 
 
-def train(*args, **kwargs):
+def test(model, test_loader, lam=0.1, device='cuda'):
     """
-    A training function
+    Test the VoxelMorph model.
+
+    Parameters:
+    model (nn.Module): The VoxelMorph model to test.
+    test_loader (DataLoader): DataLoader for the test data.
+    lam (float): Regularization parameter for the loss function.
+    device (str): Device to use for testing ('cuda' or 'cpu').
+
+    Returns:
+    None
     """
-    raise NotImplementedError('Implement this function yourself')
+
+    device = torch.device(device if torch.cuda.is_available() else 'cpu')
+    model.to(device)
+    model.eval()
+
+    test_loss = 0.0
+    with torch.no_grad():
+        for batch in tqdm(test_loader, desc="Testing"):
+            batch = batch.to(device)
+            moving, fixed = batch[:, 1:2], batch[:, 0:1]  # Extract moving and fixed images
+            fixmov = torch.cat([fixed, moving], dim=1)
+            disp = model(fixmov)
+            loss = model.loss(fixed, moving, disp, lam)
+            test_loss += loss.item()
+
+    test_loss /= len(test_loader)
+    print(f"Test Loss: {test_loss:.4f}")
 
 
-def test(*args, **kwargs):
-    """
-    A testing function
-    """
-    raise NotImplementedError('Implement this function yourself')
+def main():
+    parser = argparse.ArgumentParser()
+
+    # Training hyperparameteres
+    parser.add_argument('--num_epochs', default=150, type=int)
+    parser.add_argument('--learning_rate', default=1e-3, type=float)
+    parser.add_argument('--lam', default=0.1, type=float)
+
+    # Model Hyperparameters
+    parser.add_argument('--nb_features', default=16, type=int)
+    parser.add_argument('--mul_features', default=2, type=int)
+    parser.add_argument('--nb_levels', default=3, type=int)
+    parser.add_argument('--nb_conv_per_level', default=2, type=int)
+    parser.add_argument('--activation', default='ReLU', type=str)
+    parser.add_argument('--pool', default='conv', type=str)
+    
+    args = parser.parse_args()
+    
+    # Initialize the model
+    backbone_parameters = {
+        'nb_features': args.nb_features,
+        'mul_features': args.mul_features,
+        'nb_levels': args.nb_levels,
+        'nb_conv_per_level': args.nb_conv_per_level,
+        'activation': args.activation,
+        'pool': args.pool,
+    }
+
+    trainset, evalset, testset = get_train_eval_test()
+
+    # Initialize TensorBoard writer
+    writer = SummaryWriter()
+
+    model = VoxelMorph(**backbone_parameters)
+
+    print(model)
+
+    # Train the model
+    train(model, trainset, evalset, writer, num_epochs=args.num_epochs, learning_rate=args.learning_rate, lam=args.lam)
+
+    # # Test the model
+    test(model, testset, lam=args.lam)
+
+    writer.close()
+
+if __name__ == '__main__':
+    main()
